@@ -90,6 +90,17 @@ spcFilter <- function(table, species, MHC){
   return(st)
 }
 
+## generate the vector of CDR3 & epitope length then, add the table in the new 
+## column called 'CDR3.length'.
+aminoLength <- function(table){
+  lenCDR3 <- nchar(as.character(table$CDR3))
+  table[,'CDR3.length'] <- lenCDR3
+  
+  lenEpitope <- nchar(as.character(table$Epitope))
+  table[,'Epitope.length'] <- lenEpitope
+  return(table)
+}
+
 ## randomly select the CDR3 squences for MSA
 randCDR <- function(vdj, species,n){
   #library('dplyr')
@@ -111,11 +122,11 @@ args = commandArgs(trailingOnly = TRUE)
 # args[1] == VDJ data, args[2] == species, args[3] == MHC class
 
 ## Filter rawdata by species and MHC
-table <- freqFilter(args[1]) #'vdj220817.txt'
+table <- freqFilter('vdj220817.txt') #'vdj220817.txt #args[1]'
 
 ## extract frequency and subject.id 
 table$Method <- parseFreq(table)
-table$Meta <- factor(parseSubject(table))
+table$Meta <- as.factor(parseSubject(table))
 colnames(table)[14:15] <- c('frequency','subject.id')
 
 ## format frequency to numeric value
@@ -127,11 +138,14 @@ table <- na.omit(table)
 ## identify IDD and SDD
 table <- identIDD(table)
 
+## check the length of CDR3 motif and epitopes
+table <- aminoLength(table)
+
 ## select species and MHC class
-spc_table <- spcFilter(table, args[2], args[3])
+#spc_table <- spcFilter(table, args[2], args[3])
 
 ## write table 
-exportTable(spc_table, args[4])
+#exportTable(spc_table, args[4])
 
 
 
