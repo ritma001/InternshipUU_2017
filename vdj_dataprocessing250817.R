@@ -136,6 +136,25 @@ parseAB <- function(table, chain){
   return(df)
 }
 
+## combine the genetic regions of V, J and MHC.A after the * ex. HLA-A*02 & HLA-A*02:01 
+## are grouped to HLA-A*02
+combineRegion <- function(table, parm){
+  # convert factor to character column
+  table[, parm] <- as.character(table[, parm])
+  result = c()
+    for(i in table[,parm]){
+      if(parm == "V" | parm == "J"){
+        new.value <- gsub("[\\*|/|-].*$","",i) # for V and J loci
+        result = c(result,new.value)
+      } else {
+        new.value <- gsub(":.*$","",i) # for MHC.A
+        result = c(result,new.value)
+      }
+    }
+  table[, parm] <- factor(result)
+  return(table)
+}
+
 ################################################################################
 ## Part IV: Write CDR3 with custom header as .fasta file ##
 ################################################################################
@@ -147,13 +166,70 @@ exportTable <- function(t,filename){
 }
 
 ## write the table in fasta format II (clearer headder than format I)
-> exportTable <- function(t,filename){
+exportTable2 <- function(t,filename){
   export <- paste(paste(paste(">",t$dominant, sep = ""),1:length(t$dominant),sep="") ,t$CDR3, sep="\n")
   write.table(export, file = paste(filename,"fasta",sep="."), append = FALSE, quote = FALSE, sep = "\n",eol = "\n", row.names = FALSE, col.names = FALSE)
 }
 
-
 ################################################################################
+## Part V: Calulate the relative frequency based on the idd and sdd ##
+################################################################################
+## input: the dataset contains both IDD and SDD, 
+## column with rel. frequency for each dominant type
+#
+relFreq <- function(table, parm){
+  rel.freq <- c()
+  # calculate the total number of IDD and SDD
+  sum.IDD <- nrow(table[table$dominant == "IDD", ])
+  sum.SDD <- nrow(table[table$dominant == "SDD", ])
+  
+  # ensure the the collumn is a factor 
+  table[, parm] <- factor(table[, parm])
+  
+  # row-wise iteration and keep the frequency in the rel.freq vector
+  for(i in 1:nrow(table)){
+    if(table[i,"dominant"] == "IDD"){
+      level.freq <- length(table[table$dominant == "IDD" & table[,parm] == table[i,parm], parm])/sum.IDD
+    } else {
+      level.freq <- length(table[table$dominant == "SDD" & table[,parm] == table[i,parm], parm])/sum.SDD
+    }
+    rel.freq <- c(rel.freq, level.freq)
+  }
+  table$rel.freq <- rel.freq
+  return(table)
+}
+# plot the 2plot top-bottom of IDD and SDD with black color
+library(ggplot2)
+plotrelFreq <- function(table, var, main){
+  #table[,var] <- factor(table[,var], levels = names(sort(summary(droplevels(table[,var])),decreasing = TRUE)))
+  p <- ggplot(data = table, aes_string(x=var)) + 
+    geom_bar(aes(y=rel.freq),stat = "identity", position = "dodge") + 
+    labs(title = main, y = "Relative frequency") +
+    theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  p + facet_wrap(~dominant, ncol = 1, scales = "free_y")
+}
+# call function
+plotrelFreq(relFreq(vdj2.a, "V"), "V" , "V distribution of alpha chain")
+plotrelFreq(relFreq(vdj2.b, "V"), "V" , "V distribution of beta chain")
+
+# plot 2 bar next to each other
+library(ggplot2)
+library(tidyr)
+library(reshape2)
+
+plotrelFreq2 <- function(table, var, main){
+  table[,var] <- factor(table[,var], levels = names(sort(summary(droplevels(table[,var])),decreasing = TRUE)))
+  p <- ggplot(data = table, aes_string(x=var)) + 
+    geom_bar(aes(y=rel.freq, fill = dominant),stat = "identity", position = "dodge") + 
+    labs(title = main, y = "Relative frequency") +
+    theme(plot.title = element_text(hjust = 0.5), axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+  p
+}
+# call function
+plotrelFreq2(relFreq(vdj2.a, "V"), "V" , "V distribution of alpha chain")
+plotrelFreq2(relFreq(vdj2.b, "V"), "V" , "V distribution of beta chain")
+
+########################s########################################################
 ## Execution of the code above ##
 ################################################################################
 
@@ -181,8 +257,36 @@ table <- identIDD(table)
 ## check the length of CDR3 motif and epitopes
 table <- aminoLength(table)
 
-## select species and MHC class
+## select species and MHC class/ no human epitopes
 #spc_table <- spcFilter(table, args[2], args[3])
+vdj2 <- table[table$Epitope.species != "HomoSapiens",]
+
+# group V, J and MHC region 
+vdj2.j <- combineRegion(vdj2, "J")
+vdj2.v <- combineRegion(vdj2.j, "V")
+vdj2 <- combineRegion(vdj2.v, "MHC.A")
+
+# generae 2 datasets based on TCR chain
+vdj2.a <- parseAB(vdj2,"TRA")
+vdj2.b <- parseAB(vdj2,"TRB")
+
+vdj2a.idd <- vdj2.a[vdj2.a$dominant == "IDD",]
+vdj2a.sdd <- vdj2.a[vdj2.a$dominant == "SDD",]
+vdj2b.idd <- vdj2.b[vdj2.b$dominant == "IDD",]
+vdj2b.sdd <- vdj2.b[vdj2.b$dominant == "SDD",]
+
+# generate 2 data sets based on dominant types
+vdj2.idd <- vdj2[vdj2$dominant == "IDD",]
+vdj2.sdd <- vdj2[vdj2$dominant == "SDD",]
+
+################################################################################
+## get a vector of non-redundnat CDR3 sequences
+################################################################################
+# generate the datasets with non-repetitive sequences
+cdr3a.idd.nr <- levels(droplevels(vdj2a.idd$CDR3))
+cdr3a.sdd.nr <- levels(droplevels(vdj2a.sdd$CDR3))
+cdr3b.idd.nr <- levels(droplevels(vdj2b.idd$CDR3))
+cdr3b.sdd.nr <- levels(droplevels(vdj2b.sdd$CDR3))
 
 ## write table 
 #exportTable(spc_table, args[4])
