@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # coding = "utf-8
-# Estabished date: 1/11/2017	Last modification: 1/11/2017
+# Estabished date: 1/11/2017	Last modification: 2/11/2017
 # project description: 
 '''
 Aim: to calculate hydrophobicity of amino acid sequence of CDR3 using the 
