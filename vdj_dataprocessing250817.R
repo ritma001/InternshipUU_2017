@@ -1,12 +1,6 @@
-#!usr/bin/r 
-# 
 # Author: Wannisa Ritmahan 
-# Established Date: 28/08/2017  Last modification: 03/09/2017
+# Created on: 28/08/2017
 # Aim: R code for manipulating data from the VDJdb for Immunodominance studies
-# 
-# To be improved: 
-# 1. check consistency with of word i.e. table, t, vdj etc.
-# 2. incorperate the code with bash script to reduce repetitive work
 #
 ################################################################################
 ## Part I: Data processing ##
@@ -44,20 +38,12 @@ parseFreq <- function(table){
 
 ## extract subject id, the replica.id and subject.cohort represented in "Meta" column in json format 
 parseSubject.meta <- function(Meta){
-    #subject <- sub(".*?subject.id: (.*?),.*","\\1",Meta)
     clone <- sub(".*?clone.id: (.*?),.*", "\\1", Meta)
     replica <- sub(".*?replica.id: (.*?),.*", "\\1", Meta)
     epitope <- sub(".*?epitope.id: (.*?),.*", "\\1", Meta)
-    #samples <- sub(".*?samples.found: (.*?),.*", "\\1", Meta)
-    #studies <- sub(".*?studies.found: (.*?),.*", "\\1", Meta)
     cohort <- sub(".*?subject.cohort: (.*?),.*", "\\1", Meta)
     
     id = paste(paste(paste(clone, replica, sep = "*"),epitope, sep = "*"), cohort, sep = "*")
-    #if(subject_id != ""){
-     # id = paste(paste(paste(subject, replica, sep = "*"), cohort, sep = "*"), clone, sep = "*")
-    #} else {
-     # id = NA
-    #}
   return(id)
 }
 
@@ -90,6 +76,7 @@ parseVJ <- function(table){
 
 ## parse non-VJ
 parse.nonvj <- function(table){
+  table <- table[table$j.start != -1, ]
   table$non.VJ <- substr(as.character(table[,"CDR3"]), table$v.end +1, table$j.start-1)
   return(table)
 }
@@ -108,7 +95,7 @@ freqFormat <- function(str){
 
 ## generate the CDR3 & epitope length vector then, add to the table
 aminoLength <- function(table){
-  lenCDR3 <- nchar(as.character(table$CDR3))
+  lenCDR3 <- nchar(as.character(table$CDR3))-2
   table[,'CDR3.length'] <- lenCDR3
   
   lenEpitope <- nchar(as.character(table$Epitope))
@@ -117,7 +104,7 @@ aminoLength <- function(table){
 }
 
 ################################################################################
-## Part II: Identification of immunodominant- & subdominant epitopes ##
+## Part II: Identification of immunodominant- & subdominant CDR3 ##
 ################################################################################
 ## add the denominator to the subject 
 getDenom <- function(table){
@@ -140,27 +127,33 @@ mergeFreq <- function(table){
   # so, compile based on the CDR3 seq 
   checksum <- aggregate(table$frequency, by=list(subject.id=table$subject.id), sum)
   merge.subject <- as.character(checksum[checksum$x > 100, "subject.id"])
-  drop.row = c()
-  for(i in merge.subject){
-    #print(i)
-    sum.CDR3 <- aggregate(frequency ~ CDR3, table[table$subject.id == i,], sum)
-    merge.row <- table[table$subject.id == i,]
-    merge.row <- merge.row[!duplicated(merge.row$CDR3), ]
-    merge.row$frequency <- (sum.CDR3$frequency*100)/sum(sum.CDR3$frequency)
-    nrow <- which(table$subject.id == i)
-    # remove the old rows from the dataframe then add the new one
-    drop.row <- c(drop.row, nrow)
-    table <- rbind(table, merge.row)
-  }
-  if(length(drop.row) == 0){
-    result <- table
+  if(length(merge.subject == 0)){
+    return(table)
   } else {
-    result <- table[-drop.row, ]
+    for(i in merge.subject){
+      sum.CDR3 <- aggregate(frequency ~ CDR3, table[table$subject.id == i,], sum)
+      # select only the rows containing the subject.id == i
+      merge.row <- table[table$subject.id == i,]
+      # remove repetitive CDR3
+      merge.row <- merge.row[!duplicated(merge.row$CDR3), ]
+      
+      # combine freq and recalculate the total frequency
+      sum.CDR3$corr.frequency <- (sum.CDR3$frequency*100)/sum(sum.CDR3$frequency)
+      # correct the freq in merge.row  by replacing with correponding corr.freq value
+      merge.row[match(sum.CDR3$CDR3, merge.row$CDR3), "frequency"] <- sum.CDR3$corr.frequency
+      
+      # remove the old row of subject i before adding since the merge row contains the same rowname 
+      rem.row <- rownames(table[which(table$subject.id == i),])
+      # remove the old rows from the dataframe then add the new one
+      table <- table[!rownames(table) %in% rem.row, ]
+      # add merge row
+      table <- rbind(table, merge.row)
+    }
+    return(table)
   }
-  return(result)
 }
 
-## Identify IDD and SDD for each subject_id
+## Identify ID and SD for each subject.id
 identISD <- function(table){
   table[, "dominant"] <- 0L
   # iterate for all samples in each subject to find the max frequency
@@ -173,23 +166,21 @@ identISD <- function(table){
     max.row <- which(table$frequency == max.freq)
     #select the row with max.freq defined of the certain object
     sel.row <- intersect(id.row, max.row)
-    # assign IDD and SDD in the 'dominant column'
+    # assign ID and SD in the 'dominant column'
     table[sel.row,'dominant'] <- 'ID'
     table[id.row[!id.row %in% sel.row],'dominant'] <- 'SD'
   }
-  table[,'dominant'] <- as.factor(table[,'dominant'])
   return(table)
 }
 
-# remove the subject id containing only one frequency value 
-#(to reduce the bias since IDD is only defined in this subject)
+# remove the subject id containing only one frequency value
 remLowFreq <- function(table){
   t <- table %>% group_by(subject.id) %>% dplyr::summarise(n = n()) %>% filter(n == 1)
   table <- table[!table$subject.id %in% t$subject.id,]
   return(table)
 }
 
-# remove the subject that contain only IDD
+# remove the subject that contain only ID
 remISD <- function(vdj.chain){
   library(dplyr)
   library(reshape2)
@@ -198,13 +189,12 @@ remISD <- function(vdj.chain){
   t <- vdj.chain %>% group_by(subject.id, dominant) %>% dplyr::summarise(n = n())
   t <- complete(t, subject.id, dominant, fill = list(n = 0))
   t2 <- dcast(t, subject.id~dominant, value.var = "n", fun.aggregate = sum, drop = FALSE)
-  # remove the row containing either IDD zero
-  t2.idd <- setDT(t2)[, .SD[!any(.SD[, -1, with = F] == 0)], by = subject.id]
+  # remove the row containing either ID zero
+  t2.id <- setDT(t2)[, .SD[!any(.SD[, -1, with = F] == 0)], by = subject.id]
   #Subset the subject after removing
-  vdj <- vdj.chain[vdj.chain$subject.id %in% t2.idd$subject.id, ]
+  vdj <- vdj.chain[vdj.chain$subject.id %in% t2.id$subject.id, ]
   return(vdj)
 }
-
 
 ################################################################################
 ## Part III: Create several datasets with different criteria ##
@@ -231,8 +221,8 @@ randCDR <- function(vdj, species,n){
   return(rand)
 }
 
-## create the 'IDD' and 'SDD ' datasets with option to exclude human sample
-parseISDD <- function(table, epitope){
+## create the 'ID' and 'SD ' datasets with option to exclude human sample
+parseISD <- function(table, epitope){
   df <- table[table$dominant == epitope & table$Epitope.species != 'HomoSapiens',]
   return(df)
 }
@@ -244,8 +234,8 @@ parseAB <- function(table, chain){
 }
 
 
-## combine the genetic regions of V, J and MHC.A after the * ex. HLA-A*02 & HLA-A*02:01 
-## are grouped to HLA-A*02
+## remove the suffix of of V, J and MHC.A to enable comparison 
+## at all studies at higher resolution
 combineRegion <- function(table, parm){
   # convert factor to character column
   table[, parm] <- as.character(table[, parm])
@@ -265,11 +255,11 @@ combineRegion <- function(table, parm){
 }
 
 ################################################################################
-## Part IV: Write CDR3 with custom header as .fasta file ##
+## Part IV: Write CDR3 with custom header as .fasta file if required ##
 ################################################################################
 
 ## write the table as in fasta format I
-exportTable <- function(t,filename){
+exportFasta<- function(t,filename){
   export <- paste(paste(paste(paste(">",as.character(row.names(t)),sep=""),
                               t$dominant, sep = ""),t$subject.id,sep="") ,t$CDR3, sep="\n")
   write.table(export, file = paste(filename,"fasta",sep="."), append = FALSE, 
@@ -277,7 +267,7 @@ exportTable <- function(t,filename){
 }
 
 ## write the table in fasta format II (clearer headder than format I)
-exportTable2 <- function(t,filename){
+exportFasta2 <- function(t,filename){
   export <- paste(paste(paste(">",t$dominant, sep = ""),1:length(t$dominant),
                         sep=""), t$CDR3, sep="\n")
   write.table(export, file = paste(filename,"fasta",sep="."), append = FALSE, 
@@ -285,79 +275,98 @@ exportTable2 <- function(t,filename){
 }
 
 ########################s########################################################
-## Execution the code above ##
+## Part V: combined functions previously created to generate a flow of data 
+## processing and for an ease for code execution
 ################################################################################
+# extrat prefix of V,J (TR[A,B][V,J]xx) and MHC (HL(A,B)-*xx)
+reduceSolution <- function(raw.table){
+  table.j <- combineRegion(raw.table, "J")
+  table.v <- combineRegion(table.j, "V")
+  table <- combineRegion(table.v, "MHC.A")
+  
+  return(table)
+}
 
-## pass arguments from the command lines
-#*args = commandArgs(trailingOnly = TRUE) 
-#*args[1] == VDJ data, args[2] == species, args[3] == MHC class
+extractInfo <- function(table){
+  ## extract VJ position ##
+  table <- parseVJ(table)
+  ## check the length of CDR3 motif and epitopes ##
+  table <- aminoLength(table)
+  
+  ## extract cell subset from the VDJ db ##
+  # cell.subset
+  table$cell.subset <- as.factor(sapply(table$Meta, parseSubset))
+  # remove the Naive T-cell population
+  table <- table[!table$cell.subset == "CD45RA+CCR7+CD8+", ]
+  # add the column to indicate type of T-cell which indirectly infers from MHC class
+  table$T.cell <- as.factor(sapply(table$MHC.class, function(x) ifelse(x == "MHCI", "CD8+", "CD4+")))
+  
+  ## add the cloumns of non-VJ sequences and their lengths ##
+  table$nonVJ <- substring(table$CDR3, table$v.end+1, table$j.start)
+  table$nonVJ.length <- sapply(table$nonVJ, nchar)
+  
+  table$Vseq <- substring(table$CDR3, 1, table$v.end)
+  table$Jseq <- substring(table$CDR3, table$j.start, table$CDR3.length)
 
-## Filter rawdata by species and MHC ##
-raw.table <- freqFilter('D:/InternshipUU_2017/VDJdb/R_VDJdb/vdj241017.txt') #'vdj220817.txt #args[1]'
+  return(table)
+}
 
-## reduce the resolution of V and J loci ##
-#group V, J and MHC region 
-table.j <- combineRegion(raw.table, "J")
-table.v <- combineRegion(table.j, "V")
-table <- combineRegion(table.v, "MHC.A")
-rm(list = ls(pattern = "^table."))
+removeData <- function(table){
+  ## select only CDR3 non-specifc to the human epitopes ##
+  table <- table[table$Epitope.species != "HomoSapiens",]
+  
+  ## remove some study ##
+  # remove PMID:15849183 due to different experimental setup; modified epitope #
+  table <- table[which(table$Reference != "PMID:15849183"),]
+  # remove PMID:28146579 due to the memory T-cell study
+  table <- table[which(table$Reference != "PMID:28146579"),]
+  # remove PMID:12555663 due to (T-cell clone frequency from 4 donors not each subject)
+  table <- table[which(table$Reference != "PMID:12555663"),]
+  # reomove repetitive submit PMID:19017975 
+  ##table <- table[!rownames(table) %in% c(sapply(seq(808,816),as.character)), ]
+  
+  return(table)
+}
 
-## extracct VJ position ##
-table <- parseVJ(table)
+calculateFrequency <- function(table){
+  # extract frequency from the Meta column
+  table$raw.frequency <- parseFreq(table)
+  # format frequency to numeric value
+  frequency <- sapply(table$raw.frequency, freqFormat)
+  # check the format of frequency if it is in x/x, x% otherwise multiple 100 to the fraction
+  rowname <- unique(grep(paste(c("/", "%", "//"),collapse="|"), table$Method))
+  frequency[-rowname] <- frequency[-rowname]*100
+  # add the frequency column in the table
+  table$frequency <- frequency
+  
+  ## remove the row (subject) with the frequency = 100% (so, only dominance is defined) ##
+  table <- table[table$frequency != 100, ]
+  
+  return(table)
+}
 
-## check the length of CDR3 motif and epitopes ##
-table <- aminoLength(table)
+parseTCR <- function(table, mhc, chain){
+  ## separate data based on the MHC class and TCR chain ##
+  table.mhc <- table[table$MHC.class == mhc,]
+  table.chain <- table.mhc[table.mhc$Gene == chain,]
+  
+  return(table.chain)
+}
 
-## extract cell subset from the VDJ db ##
-# cell.subset
-table$cell.subset <- as.factor(sapply(table$Meta, parseSubset))
-# remove the Naive T-cell population
-table <- table[!table$cell.subset == "CD45RA+CCR7+CD8+", ]
-# add the column to indicate type of T-cell which indirectly infers from MHC class
-table$T.cell <- as.factor(sapply(table$MHC.class, function(x) ifelse(x == "MHCI", "CD8+", "CD4+")))
+## recalculate frequency for selecting rare clonotype < 0.01% ##
+recalculateFreq <- function(df){
+  invisible(lapply(c("tidyr", "dplyr"), library, character.only = TRUE))
+  # sort dataframe by subject.id column 
+  df.sort <- df[order(df$subject.id),]
+  # recalculate the frequency and add this column (recalFreq) to the df.sort
+  df <- df.sort %>% 
+    group_by(subject.id) %>% 
+    mutate(recalFreq = frequency*100/sum(frequency))
+  return(df)
+}
 
-## extract frequency ##
-# extract frequency from the Meta column
-table$raw.frequency <- parseFreq(table)
-# format frequency to numeric value
-frequency <- sapply(table$raw.frequency, freqFormat)
-# check the format of frequency if it is in x/x, x% otherwise multiple 100 to the fraction
-rowname <- unique(grep(paste(c("/", "%", "//"),collapse="|"), table$Method))
-frequency[-rowname] <- frequency[-rowname]*100
-# add the frequency column in the table
-table$frequency <- frequency
-
-## remove the row (subject) with the frequency = 100% (so, only dominance is defined) ##
-table <- table[table$frequency != 100, ]
-
-## select only CDR3 non-specifc to the human epitopes ##
-table <- table[table$Epitope.species != "HomoSapiens",]
-
-## add the cloumns of non-VJ sequences and their lengths ##
-table$nonVJ <- substring(table$CDR3, table$v.end+1, table$j.start-1)
-table$nonVJ.length <- sapply(table$nonVJ, nchar)
-
-## remove some study ##
-# remove PMID:15849183 due to different experimental setup; modified epitope #
-table <- table[which(table$Reference != "PMID:15849183"),]
-# remove PMID:12555663 due to (T-cell clone frequency from 4 donors not each subject)
-table <- table[which(table$Reference != "PMID:12555663"),]
-# reomove repetitive submission PMID:19017975 
-table <- table[!rownames(table) %in% c(sapply(seq(7302,7310),as.character)), ]
-
-################################################################################
-## separate data based on the MHC class ##
-vdj2 <- table[table$MHC.class == "MHCII",]
-vdj1 <- table[table$MHC.class == "MHCI",]
-
-# generae 4 datasets based on TCR chain  and MHC. calss then, identify the IDD and SDD
-vdj.2a <- parseAB(vdj2,"TRA")
-vdj.2b <- parseAB(vdj2,"TRB")
-vdj.1a <- parseAB(vdj1,"TRA")
-vdj.1b <- parseAB(vdj1,"TRB")
-
-################################################################################
 ## add subject.id ##
+################################################################################
 # add column of raw.subject.id containing only the subject.id from the database
 getID <- function(table){
   raw.subject.id <- sapply(table$Meta, function(x) sub(".*?subject.id: (.*?),.*","\\1", x))
@@ -376,44 +385,234 @@ addID <- function(vdj.chain){
   return(vdj.chain)
 }
 
-vdj.2a <- addID(vdj.2a)
-vdj.2b <- addID(vdj.2b)
-vdj.1a <- addID(vdj.1a)
-vdj.1b <- addID(vdj.1b)
-
-################################################################################
-## Immunodominance/subdominance assignment ##
-################################################################################
-
-assignDominance <- function(vdj.chain){
-  # compile the total frequency more than 100% 
-  vdjm <- mergeFreq(vdj.chain)
-  # remove the smaple with only IDD defined
-  vdjmr <- remLowFreq(vdjm)
-  # assign the type of immune response(ID/SD)
-  result <- remISD(identISD(vdjmr))
+## add the frequency of multiple clones in each individual
+remMultiClone <- function(df){
+  library(dplyr)
+  # check if more then one CDR3 in individual then add the frequency of that CDR3
+  df.new <- df %>%
+    group_by(subject.id, CDR3, V.new, J.new) %>%
+    mutate(frequency=paste(sum(frequency),collapse='')) %>% ungroup()
+  
+  # collapse calumn in individual 
+  result <- df.new[!duplicated(df.new[,c("subject.id", "CDR3", "V.new", "J.new")]),]
+  result$frequency <- as.numeric(result$frequency)
   return(result)
 }
 
-## call function ##
-vdj.2a <- assignDominance(vdj.2a)
-vdj.2b <- assignDominance(vdj.2b)
-vdj.1a <- assignDominance(vdj.1a)
-vdj.1b <- assignDominance(vdj.1b)
+## Immunodominance/subdominance assignment ##
+################################################################################
+assignDominance <- function(vdj.chain){
+  # compile the total frequency more than 100% 
+  vdjm <- mergeFreq(vdj.chain)
+  # remove the subjec that contains only 1 sequence
+  vdj.mr <- remLowFreq(vdjm)
+  # assign the type of immune response(ID/SD)
+  vdj.ISD <- identISD(vdj.mr)
+  # remove the subject containing only ID
+  result <- remISD(vdj.ISD)
+  # add corrected frequency
+  result <- recalculateFreq(result)
+  return(result)
+}
+
+## assign ID/SD
+addDominance <- function(table){
+  # calculate freq #
+  table.freq <- calculateFrequency(table)
+  # add subject.id and denom
+  table.id <- addID(table.freq)
+  # add frequency of the same CDR3 seq in each individual
+  table.rem <- remMultiClone(table.id)
+  # assign the immune response type
+  table.ID <- assignDominance(table.rem)
+  
+  return(table.ID)
+}
+
+## create a dataset containing only the unique CDR3 sequences #
+excludeRepeat <- function(vdj.chain){
+  cdr3.nr <- vdj.chain[!duplicated(vdj.chain[,c("CDR3", "dominant", "Epitope")]),]
+  return(cdr3.nr)
+}
+
+# add peptide properties calculated from Peptides and alakazam packages
+################################################################################
+#* Kidera factor *#
+# calculate 10 Kidera factors, a physico-chemical properties related to structure
+callLibrary <- function(lib){
+  if(!require(noqoute(lib)))
+  {installed.packages(lib)}
+  library(lib)
+}
+
+addProperties <- function(vdj){
+  library("alakazam")
+  library("Peptides")
+  
+  # add 10 columns contataining 10 Kidera factors (KF)
+  kf <- sapply(vdj$CDR3, kideraFactors)
+  kf.df <- as.data.frame(t(matrix(unlist(kf), nrow = length(kf[[1]]))))
+  colnames(kf.df) <- paste0("KF", 1:10)
+  vdj.kf <- cbind(vdj, kf.df)
+  
+  # add 8 properties calculated from amino-acid contaning CDR3 seq
+  vdj.prop <- aminoAcidProperties(vdj.kf, property = c("gravy", "bulk", "aliphatic",
+                       "polarity", "charge", "basic", "acidic", "aromatic"),"CDR3")
+  # add grand hydropathy (gravy) of epitope
+  vdj.prop.epi <- aminoAcidProperties(vdj.prop, property = c("gravy"), "Epitope")
+  return(vdj.prop.epi)
+}
 
 ## final check at the total T-cell clone freq for each subject ##
-freq.2a <- aggregate(vdj.2a$frequency, by = list(subject.id = vdj.2a$subject.id), sum)
-freq.2b <- aggregate(vdj.2b$frequency, by = list(subject.id = vdj.2b$subject.id), sum)
-freq.1a <- aggregate(vdj.1a$frequency, by = list(subject.id = vdj.1a$subject.id), sum)
-freq.1b <- aggregate(vdj.1b$frequency, by = list(subject.id = vdj.1b$subject.id), sum)
+#checkFreq <- aggregate(cd8a$frequency, by = list(subject.id = cd8a$subject.id), sum)
 
 ################################################################################
-## get a vector of non-redundnat CDR3 sequences
+## process raw data of VDJ db ##
 ################################################################################
-# generate the datasets with non-repetitive sequences
-## write table 
-#exportTable(spc_table, args[4])
 
-## delete all objects except the function 
-# rm(list = setdiff(ls(), lsf.str()))
+## import tab-delimited table downloaded from VDJ db web server
+raw.table <- freqFilter('D:/InternshipUU_2017/VDJdb/R_VDJdb/vdj190318.tsv')
+
+# extract info and remove some studies
+cleanData <- function(raw.vdj){
+  library(tidyr)
+  library(dplyr)
+  vdj <- reduceSolution(raw.vdj) %>%
+    extractInfo %>%
+    removeData
+  return(vdj)
+}
+
+processData <- function(vdj, mhc, chain){
+  # divide data based on MHC (MHCI or MHCII) and TCR chain (TRA or TRB)
+  vdj.chain <- parseTCR(vdj, mhc,chain) %>%
+    addDominance %>%                 # defined ID/SD
+    filter(recalFreq > 0.01) %>%     # exclude rare CDR3 with low frequency
+    excludeRepeat %>%                # exclude repetitive sequences
+    as.data.frame %>%                # convert grouped_df to data.frame
+    addProperties                    # add CDR3 pro
+  return(vdj.chain)
+}
+
+################################################################################
+## process raw data
+vdj <- cleanData(raw.table)
+
+## generate datasets based on TCR chain  and MHC
+cd8a.nr <- processData(vdj, "MHCI","TRA")
+cd8b.nr <- processData(vdj, "MHCI","TRB")
+
+################################################################################
+# select the top three epitopes
+a2GIL <- cd8b.nr[cd8b.nr$Epitope== "GLCTLVAML", ] 
+a2GIL <- cd8b.nr[cd8b.nr$Epitope== "GILGFVFTL", ]  
+a2NLV <- cd8b.nr[cd8b.nr$Epitope== "NLVPMVATV", ] 
+
+
+################################################################################
+## select public TCR ##
+################################################################################
+selectPublicTCR <- function(table, cutoff){
+  require(tidyr)
+  require(dplyr)
+  t <- table %>% 
+    group_by(CDR3) %>% 
+    dplyr::summarise(n = n()) %>%
+    filter(n < cutoff) 
+  table <- table[!table$CDR3 %in% t$CDR3,]
+  return(table)
+}
+
+# select sequence that presents > 1
+pcd8b <- selectPublicTCR(cd8b, 2)
+# change InfluenzaA to Influenza-A
+pcd8b[pcd8b$Epitope.species == "InfluenzaA", "Epitope.species"] <- "Influenza-A"
+# extract unique CDR3 based on CDR3 seq, dominant and epitope
+pcd8b.nr <- excludeRepeat(pcd8b)
+pcd8b.nr <- addProperties(pcd8b.nr)
+
+################################################################################
+## import naive T-cell data ##
+################################################################################
+selectCDR3 <- function(d, cell, chain, id){
+  library(dplyr)
+  library(tidyr)
+  # select the CDR3 with only Naive count and zero Non-naive count (NN count) to
+  # avoid technical error from cell contamination
+  naive <- d[which(d[, 1] != 0),]
+  naive <- naive[which(naive[, 2] == 0),]
+  # add the CD3 length, nonV-J length, column
+  naive <- naive %>% 
+    mutate(CDR3.length = sapply(as.character(naive$AAseq), nchar)-2,
+           cell.subset = rep(cell, dim(naive)[1]),
+           chain = rep(chain, dim(naive)[1]),
+           subject.id = rep(id, dim(naive)[1]),
+           nonVJ.length = sapply(as.character(naive$Ins), nchar))
+  return(naive)
+}
+
+# export CDR3 to be used as an input for python script to extract CDR3 AA
+exportCDR3.naive <- function(table, filename, column){
+  # the arg column can be either "CDR3" or "Epitope"
+  cdr3.table <- paste(paste0(">", as.character(row.names(table))), 
+                      table[,column], sep = "\n")
+  write.table(cdr3.table , file = paste0(filename, ".txt"), append = FALSE, 
+              quote = FALSE, sep = "\n",eol = "\n", row.names = FALSE, col.names = FALSE)
+}
+
+################################################################################
+# read csv file; 1 file/donor of CDR3 beta chain
+
+pt_8b1 <- read.csv("D:/InternshipUU_2017/Naive_Tcell/Peter_NT/classified8b1.csv")
+pt_8b2 <- read.csv("D:/InternshipUU_2017/Naive_Tcell/Peter_NT/classified8b2.csv")
+
+naive.pt8b.1 <- selectCDR3(pt_8b1, "CD8+", "Beta", "1")
+naive.pt8b.2 <- selectCDR3(pt_8b2, "CD8+", "Beta", "2")
+
+# combined data from 2 donors and select the CDR3 clone with absolute count > 1
+naive.pt8b <- rbind(naive.pt8b.1 , naive.pt8b.2)
+ncd8b.nr <- naive.pt8b[!duplicated(naive.pt8b[, "AAseq"]) & naive.pt8b$Naive.count > 1,]
+
+# add nonVJ AA
+exportCDR3.naive(naive.pt8b, "peter_naivecd8b", "AAseq")
+naive.hydropathy.cdr3 <- read.table("D:/InternshipUU_2017/Naive_Tcell/Peter_NT/peter_naivecd8b_hd.txt")
+naive.pt8b$hydropathy.cdr3 <- naive.hydropathy.cdr3[,1]
+
+################################################################################
+# read csv file; 1 file/donor of CDR3 alpah chain
+
+pt_8a1 <- read.csv("D:/InternshipUU_2017/Naive_Tcell/Peter_NT/classified8a1.csv")
+pt_8a2 <- read.csv("D:/InternshipUU_2017/Naive_Tcell/Peter_NT/classified8a2.csv")
+
+naive.pt8a.1 <- selectCDR3(pt_8a1, "CD8+", "Alpha", "1")
+naive.pt8a.2 <- selectCDR3(pt_8a2, "CD8+", "Alpha", "2")
+
+naive.pt8a <- rbind(naive.pt8a.1 , naive.pt8a.2)
+ncd8a.nr <- naive.pt8a[!duplicated(naive.pt8a[, "AAseq"]) & naive.pt8a$Naive.count > 1,]
+
+# add nonVJ AA
+exportCDR3.naive(naive.pt8a, "peter_naivecd8a", "AAseq")
+naive.hydropathy.cdr3 <- read.table("D:/InternshipUU_2017/Naive_Tcell/Peter_NT/peter_naivecd8a_hd.txt")
+naive.pt8a$hydropathy.cdr3 <- naive.hydropathy.cdr3[,1]
+
+################################################################################
+# generate the CDR-H3 dataset containing CDR3 from the heavy chain of B-cell
+# (downloaded from abYsis-human heavy chain)
+################################################################################
+
+readCDRH3 <- function(file){
+  cdrh3 <- read.table(file, col.names = "CDRH3")
+  cdrh3$insertion <- apply(cdrh3, 1, function(seq) substr(seq, 7, nchar(seq)-2))
+  return(cdrh3)
+}
+
+abysis1 <- readCDRH3("ABYSIS_CDRH3.txt")
+abysis401 <- readCDRH3("ABYSIS401_CDRH3.txt")
+abysis801 <- readCDRH3("ABYSIS801_CDRH3.txt")
+abysis1201 <- readCDRH3("ABYSIS1201_CDRH3.txt")
+
+bcr.cdrh3 <- Reduce(function(x, y) merge(x, y, all=TRUE), 
+                    list(abysis1, abysis401,abysis801, abysis1201))
+
+
 
